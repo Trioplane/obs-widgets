@@ -17,6 +17,10 @@
     padding: 1rem;
   }
 
+  :global(::view-transition-group(*)) {
+    animation-duration: 1s;
+  }
+
   :global(.spotify-widget) {
     grid-row: 3;
     grid-column: 0;

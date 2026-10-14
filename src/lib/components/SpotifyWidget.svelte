@@ -2,7 +2,7 @@
 
 <script lang="ts">
   import { STATUSBADGES_URL } from '$app/env/public';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 
   type Props = { className?: string };
 
@@ -97,36 +97,69 @@
     activities: Activity[]
   }
 
-  let userPresence = $state<UserPresence>({"status":"offline","client_status":{},"activities":[]});
+  const OFFLINE: UserPresence = { status: "offline", client_status: {}, activities: [] };
+  let userPresence = $state<UserPresence>(OFFLINE);
 
   let userStatus = $derived(userPresence.status);
-  let spotifyActivity: Activity | null = $derived.by(() => {
-    if (userStatus == "offline") return null;
 
-    const activity = userPresence.activities.find(v => v.type == 2 && v.name == "Spotify")
-    if (!activity) return null;
+  function findSpotifyActivity(p: UserPresence): Activity | null {
+    if (p.status === "offline") return null;
+    return p.activities.find(a => a.type === 2 && a.name === "Spotify") ?? null;
+  }
 
-    return activity
-  })
+  function songKey(a: Activity | null) {
+    return a ? `${a.details}|${a.state}|${a.assets?.large_text}` : null;
+  }
+
+  let spotifyActivity = $derived(findSpotifyActivity(userPresence))
   let coverArtUrl = $derived(`https://i.scdn.co/image/${spotifyActivity?.assets?.large_image?.replace('spotify:', '')}`);
 
-  async function refetchPresence() {
+  async function refetchPresence(): Promise<UserPresence> {
     try {
       const res = await fetch(STATUSBADGES_URL);
-      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} during user presence fetch.`)
-      userPresence = await res.json();
-    } catch {
-      console.error("Failed to fetch user presence.")
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} during user presence fetch.`);
+      return await res.json();
+    } catch (e) {
+      console.error("Failed to fetch user presence.", e);
+      return OFFLINE; // show no song
     }
   }
 
-  onMount(async () => await refetchPresence())
+  let animationTrigger = $state(0);
+  let currentKey: string | null = null;
+  onMount(() => {
+    let active = true;
+
+    async function poll() {
+      const newPresence = await refetchPresence();
+      if (!active) return; // component died dont fetch
+
+      const newKey = songKey(findSpotifyActivity(newPresence));
+      const changed = newKey !== currentKey;
+      currentKey = newKey;
+
+      document.startViewTransition(async () => {
+        if (changed) {
+          if (!active) return;
+          userPresence = newPresence;
+          animationTrigger++
+          await tick();
+        };
+      })
+    }
+
+    poll();
+    const interval = setInterval(poll, 3000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  });
 
   function wrapUnknown(value: any) {
     return value != undefined ? value : "Unknown"
   }
-
-  setInterval(async () => await refetchPresence(), 5 * 1000)
 </script>
 
 <svg style="position:absolute; visibility:hidden;">
@@ -139,6 +172,7 @@
   </filter>
 </svg>
 
+{#key animationTrigger}
 <div class={["widget-container", className, {"has-cover-art": spotifyActivity?.assets?.large_image != undefined}]} style="--cover-art-url: url('{coverArtUrl}');">
   <div class="cover-art-container">
     {#if spotifyActivity?.assets?.large_image}
@@ -149,11 +183,12 @@
     {#if spotifyActivity}
       <p class="song-name">{ wrapUnknown(spotifyActivity.details) } <span class="album-name">on { wrapUnknown(spotifyActivity.assets?.large_text) }</span></p>
       <p class="artist-name">by { wrapUnknown(spotifyActivity.state) }</p>
-    {:else}
+      {:else}
       <p class="artist-name">No song.</p>
     {/if}
   </div>
 </div>
+{/key}
 
 <style>
   .widget-container {
@@ -165,6 +200,16 @@
 
     position: relative;
     overflow: hidden;
+
+    background-color: gray;
+    box-shadow: 0 10px 10px rgb(0, 0, 0, 0.25);
+    width: max-content;
+    height: max-content;
+    padding: 0.5em;
+    padding-right: 1em;
+    border-radius: 4px;
+
+    animation: fadeOut 2s ease 3s both;
 
     &.has-cover-art {
       background-color: transparent;
@@ -185,14 +230,6 @@
         z-index: -1;
       }
     }
-
-    background-color: gray;
-    box-shadow: 0 10px 10px rgb(0, 0, 0, 0.25);
-    width: max-content;
-    height: max-content;
-    padding: 0.5em;
-    padding-right: 1em;
-    border-radius: 4px;
 
     .cover-art-container {
       width: 5em;
@@ -236,6 +273,16 @@
         overflow: hidden;
         text-overflow: ellipsis;
       }
+    }
+  }
+
+  @keyframes fadeOut {
+    0% {
+      opacity: 1;
+    }
+
+    100% {
+      opacity: 0.15;
     }
   }
 </style>
